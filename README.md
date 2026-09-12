@@ -39,6 +39,9 @@ flowchart LR
 - Human-in-the-loop remediation requests with an approval audit trail.
 - Browser dashboard at `/dashboard/`.
 - Automated API and workflow tests.
+- A LangGraph-orchestrated two-agent pipeline: a tool-using Investigator agent hands off to a separate Reporter agent that only ever sees policy-verified facts, never the Investigator's raw reasoning.
+- MLflow experiment tracking (local SQLite backend) logging every investigation's parameters, evidence metrics, severity tag, and generated report as a reproducible run.
+- An evaluation harness that runs the agent against simulated incidents with known ground-truth severity and reports a diagnosis accuracy score.
 
 ## Quick start
 
@@ -51,6 +54,16 @@ flowchart LR
 ```bash
 ollama pull qwen2.5:3b
 ollama serve
+```
+
+The LangGraph and MLflow tooling below should run inside a dedicated virtual environment so their dependencies never collide with other Python projects on your machine:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install langgraph mlflow
 ```
 
 ### Start the service
@@ -71,6 +84,55 @@ python3 scripts/agentic_investigator.py
 ```
 
 The agent must query two independent sources (`get_recent_events` and `get_metrics_snapshot`) before it can complete. The report displays verified metrics separately from the model's diagnosis.
+
+### Run the LangGraph investigator/reporter pipeline (recommended)
+
+`scripts/agentic_graph.py` replaces the single hand-rolled loop above with a real two-agent LangGraph state machine: an **Investigator** node that loops until it has gathered at least two independent evidence sources, and a separate **Reporter** node that makes its own Ollama call and only ever sees the policy-computed facts, never the Investigator's raw reasoning.
+
+```bash
+source .venv/bin/activate
+python3 scripts/generate_traffic.py --requests 20 --fault drift
+python3 scripts/agentic_graph.py
+```
+
+Each run is automatically logged to MLflow (see below).
+
+### Experiment tracking with MLflow
+
+Every run of `agentic_graph.py` logs as an MLflow run under the `aegisops_incident_investigations` experiment, tracked in a local SQLite database (`mlflow.db`) so no external service is required:
+
+- **Params:** model name, base URL
+- **Metrics:** tool calls made, investigator steps, run duration, observed error rate, drift score, and confidence
+- **Tags:** the policy-derived severity
+- **Artifacts:** the full generated incident report (`incident_report.md`)
+
+View it with:
+
+```bash
+python3 -m mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
+
+Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) and switch to the **Model training** tab (not the default GenAI/Tracing tab) to see the classic runs table.
+
+### Evaluation harness
+
+`scripts/eval_harness.py` runs the agent against a set of simulated incidents with **known ground-truth severity**, restarting the inference service between each scenario so Prometheus counters and the event log start clean for every measurement:
+
+| Fault mode | Expected severity |
+|---|---|
+| none | low |
+| errors | high |
+| low_confidence | medium |
+| drift | medium |
+
+```bash
+source .venv/bin/activate
+python3 scripts/eval_harness.py --scenarios 8
+```
+
+Each scenario is logged as a nested MLflow run under `aegisops_eval_harness`, and the harness prints a final accuracy score.
+
+**Result:** the agent correctly diagnosed severity in **4/4 (100%)** of scenarios across all four fault types (baseline, errors, low confidence, and drift) in the most recent run.
 
 ### Submit a human-approved remediation
 
@@ -109,7 +171,9 @@ make test
 app/main.py                     FastAPI inference, telemetry, and approval API
 app/static/index.html           Browser dashboard
 scripts/generate_traffic.py     Repeatable incident traffic
-scripts/agentic_investigator.py Local tool-using Ollama agent
+scripts/agentic_investigator.py Local tool-using Ollama agent (single-loop)
+scripts/agentic_graph.py        LangGraph investigator/reporter pipeline with MLflow logging
+scripts/eval_harness.py         Ground-truth accuracy evaluation across simulated incidents
 scripts/remediation.py          Remediation request and approval CLI
 tests/test_main.py              API and workflow tests
 ```
