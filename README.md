@@ -132,7 +132,7 @@ python3 scripts/eval_harness.py --scenarios 8
 
 Each scenario is logged as a nested MLflow run under `aegisops_eval_harness`, and the harness prints a final accuracy score.
 
-**Result:** the agent correctly diagnosed severity in **4/4 (100%)** of scenarios across all four fault types (baseline, errors, low confidence, and drift) in the most recent run.
+**Result:** the agent correctly diagnosed severity in **8/8 (100%)** of scenarios, covering all four fault types (baseline, errors, low confidence, and drift) each run twice, in the most recent full evaluation.
 
 ### Submit a human-approved remediation
 
