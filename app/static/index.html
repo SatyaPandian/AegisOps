@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AegisOps | ML Reliability Console</title>
+  <style>
+    :root { --bg:#0b1220; --panel:#121c2e; --border:#24334d; --text:#e8eef9; --muted:#9aabc5; --cyan:#36c9e8; --green:#3ddc97; --amber:#ffbe55; --red:#ff6b7d; }
+    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+    header { padding:30px max(24px,calc((100vw - 1160px)/2)); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    h1 { margin:0; font-size:26px; letter-spacing:-.5px; } h1 span { color:var(--cyan); } .subtitle { color:var(--muted); margin:5px 0 0; }
+    .live { color:var(--green); font-weight:700; font-size:13px; } main { max-width:1160px; margin:auto; padding:26px 24px 48px; }
+    .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; } .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:17px; }
+    .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.08em; } .value { font-size:27px; font-weight:750; margin-top:7px; } .danger { color:var(--red); } .ok { color:var(--green); } .warning { color:var(--amber); }
+    .section { margin-top:24px; } h2 { font-size:17px; margin:0 0 12px; } .two { display:grid; grid-template-columns:1.1fr .9fr; gap:18px; }
+    button { background:#1c2d48; color:var(--text); border:1px solid #365073; border-radius:8px; padding:9px 11px; margin:0 6px 7px 0; cursor:pointer; } button:hover { border-color:var(--cyan); } button.danger-btn { border-color:#87404b; }
+    .stream { max-height:390px; overflow:auto; } .event { padding:10px 0; border-bottom:1px solid var(--border); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    .event:last-child { border-bottom:0; } .event time { color:var(--muted); } .pill { float:right; font:700 11px/1.2 Inter,sans-serif; padding:3px 7px; border-radius:99px; background:#193752; color:var(--cyan); }
+    .pill.ERROR { background:#4d202b; color:#ff9ca8; } .pill.WARNING { background:#4a3820; color:#ffd088; } .empty { color:var(--muted); padding:12px 0; }
+    .remediation { padding:12px; margin-bottom:9px; background:#0d1727; border-radius:8px; border-left:3px solid var(--amber); } code { color:#9edff0; }
+    @media (max-width:820px) { .grid { grid-template-columns:repeat(2,1fr); } .two { grid-template-columns:1fr; } header { align-items:flex-start; flex-direction:column; } }
+  </style>
+</head>
+<body>
+  <header><div><h1><span>Aegis</span>Ops</h1><p class="subtitle">Agentic ML Reliability &amp; Incident Response Console</p></div><div class="live">● LIVE · refreshes every 5s</div></header>
+  <main>
+    <div class="grid">
+      <div class="card"><div class="label">Service health</div><div class="value" id="health">—</div></div>
+      <div class="card"><div class="label">Error rate</div><div class="value" id="error-rate">—</div></div>
+      <div class="card"><div class="label">Last confidence</div><div class="value" id="confidence">—</div></div>
+      <div class="card"><div class="label">Input drift score</div><div class="value" id="drift">—</div></div>
+    </div>
+    <section class="section card"><h2>Fault injection</h2><p class="subtitle">Create controlled incidents for the investigator. These buttons only change the local simulator.</p><div id="fault-buttons"></div></section>
+    <div class="two section">
+      <section class="card"><h2>Recent evidence</h2><div class="stream" id="events"><div class="empty">Loading events…</div></div></section>
+      <section class="card"><h2>Remediation audit trail</h2><div id="remediations"><div class="empty">Loading remediation requests…</div></div></section>
+    </div>
+  </main>
+  <script>
+    const modes = ['none','latency','errors','low_confidence','drift'];
+    const escapeHtml = value => String(value).replace(/[&<>'"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+    document.querySelector('#fault-buttons').innerHTML = modes.map(mode => `<button class="${mode === 'errors' ? 'danger-btn' : ''}" onclick="setFault('${mode}')">${mode.replace('_',' ')}</button>`).join('');
+    async function setFault(mode) { await fetch('/admin/fault', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode})}); refresh(); }
+    const metric = (text, pattern) => { const match = text.match(pattern); return match ? Number(match[1]) : 0; };
+    async function refresh() {
+      try {
+        const [health, events, remediations, metricsText] = await Promise.all([
+          fetch('/health').then(r=>r.json()), fetch('/admin/events?limit=50').then(r=>r.json()), fetch('/admin/remediations').then(r=>r.json()), fetch('/metrics').then(r=>r.text())
+        ]);
+        const success = metric(metricsText,/aegisops_inference_requests_total\{result="success"\}\s+([\d.]+)/);
+        const failed = metric(metricsText,/aegisops_inference_requests_total\{result="error"\}\s+([\d.]+)/);
+        const confidence = metric(metricsText,/^aegisops_last_prediction_confidence\s+([\d.]+)/m);
+        const drift = metric(metricsText,/^aegisops_input_drift_score\s+([\d.]+)/m);
+        const rate = success + failed ? failed / (success + failed) : 0;
+        document.querySelector('#health').textContent = health.status.toUpperCase(); document.querySelector('#health').className = `value ${health.status === 'ok' ? 'ok' : 'danger'}`;
+        document.querySelector('#error-rate').textContent = `${(rate*100).toFixed(1)}%`; document.querySelector('#error-rate').className = `value ${rate >= .2 ? 'danger' : 'ok'}`;
+        document.querySelector('#confidence').textContent = confidence ? confidence.toFixed(3) : '—'; document.querySelector('#confidence').className = `value ${confidence && confidence < .65 ? 'warning' : 'ok'}`;
+        document.querySelector('#drift').textContent = drift.toFixed(2); document.querySelector('#drift').className = `value ${drift >= .5 ? 'warning' : 'ok'}`;
+        document.querySelector('#events').innerHTML = events.events.length ? events.events.slice().reverse().map(event => `<div class="event"><span class="pill ${event.level}">${escapeHtml(event.level)}</span><strong>${escapeHtml(event.event)}</strong><br><time>${escapeHtml(event.timestamp)}</time><br>${escapeHtml(JSON.stringify(Object.fromEntries(Object.entries(event).filter(([key]) => !['timestamp','level','event'].includes(key)))))}</div>`).join('') : '<div class="empty">No events recorded yet.</div>';
+        document.querySelector('#remediations').innerHTML = remediations.remediations.length ? remediations.remediations.slice().reverse().map(item => `<div class="remediation"><strong>${escapeHtml(item.action)}</strong><br><code>${escapeHtml(item.status)}</code><br><span class="subtitle">Requested by ${escapeHtml(item.requested_by)}${item.approved_by ? ` · approved by ${escapeHtml(item.approved_by)}` : ''}</span></div>`).join('') : '<div class="empty">No remediation requests yet.</div>';
+      } catch (error) { document.querySelector('#health').textContent = 'OFFLINE'; document.querySelector('#health').className = 'value danger'; }
+    }
+    refresh(); setInterval(refresh, 5000);
+  </script>
+</body>
+</html>
