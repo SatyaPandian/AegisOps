@@ -41,7 +41,7 @@ flowchart LR
 - Automated API and workflow tests.
 - A LangGraph-orchestrated two-agent pipeline: a tool-using Investigator agent hands off to a separate Reporter agent that only ever sees policy-verified facts, never the Investigator's raw reasoning.
 - MLflow experiment tracking (local SQLite backend) logging every investigation's parameters, evidence metrics, severity tag, and generated report as a reproducible run.
-- An evaluation harness that runs the agent against simulated incidents with known ground-truth severity and reports a diagnosis accuracy score.
+- An evaluation harness that scores the agent on two independent axes against simulated ground-truth incidents: policy-derived severity accuracy, and an LLM-judged score of whether the agent's free-text diagnosis names the correct root cause.
 
 ## Quick start
 
@@ -116,23 +116,33 @@ Then open [http://127.0.0.1:5000](http://127.0.0.1:5000) and switch to the **Mod
 
 ### Evaluation harness
 
-`scripts/eval_harness.py` runs the agent against a set of simulated incidents with **known ground-truth severity**, restarting the inference service between each scenario so Prometheus counters and the event log start clean for every measurement:
+`scripts/eval_harness.py` runs the agent against a set of simulated incidents with **known ground-truth severity and root cause**, restarting the inference service between each scenario so Prometheus counters and the event log start clean for every measurement:
 
-| Fault mode | Expected severity |
-|---|---|
-| none | low |
-| errors | high |
-| low_confidence | medium |
-| drift | medium |
+| Fault mode | Expected severity | Expected root cause |
+|---|---|---|
+| none | low | system healthy, no significant errors or drift |
+| errors | high | high rate of upstream/prediction failures |
+| low_confidence | medium | unusually low model prediction confidence |
+| drift | medium | elevated input data drift |
 
 ```bash
 source .venv/bin/activate
 python3 scripts/eval_harness.py --scenarios 8
 ```
 
-Each scenario is logged as a nested MLflow run under `aegisops_eval_harness`, and the harness prints a final accuracy score.
+Each scenario is scored on **two independent axes**, logged as a nested MLflow run under `aegisops_eval_harness`:
 
-**Result:** the agent correctly diagnosed severity in **8/8 (100%)** of scenarios, covering all four fault types (baseline, errors, low confidence, and drift) each run twice, in the most recent full evaluation.
+1. **Severity accuracy** — does the policy-derived severity (`policy_severity()`, a deterministic function over Prometheus metrics) match the expected ground truth?
+2. **Diagnosis accuracy** — a *separate* Ollama call acts as an LLM judge, reading only the Reporter agent's free-text diagnosis (no access to the original evidence) and grading whether it actually names the correct root cause.
+
+**Result from the most recent full run (8 scenarios):**
+
+| Metric | Score |
+|---|---|
+| Severity accuracy | 8/8 (100%) |
+| Diagnosis accuracy (LLM-judged) | 1/8 (12.5%) |
+
+**What this reveals:** severity stayed perfectly reliable specifically *because* it never depends on the LLM's own reasoning being correct — it's computed by a plain policy function reading verified metrics. The Reporter's free-text diagnosis, by contrast, was frequently wrong: it tended to cite every fact it was handed (including metrics sitting at their normal baseline, like a drift score of 0.08) as if they were all contributing causes, rather than distinguishing which values actually indicated a problem. This is empirical evidence for the project's core design decision: **never let an LLM's own conclusions drive operational severity or remediation — gate those behind deterministic, auditable policy logic**, and treat the LLM's prose as an explanation to a human, not a source of truth.
 
 ### Submit a human-approved remediation
 
